@@ -39,7 +39,7 @@ ahttp 是一个使用 aiohttp 和 asyncio 为基础进行封装的库，所有�
 	<aiohttp [200]> # []中的数字200是状态码，200代表请求成功
 获取返回的html可以这样：
 
-	results[0].text #获取第一个返回的html
+	results[0].text() #获取第一个返回的html
 
 
 **需要注意的是，aiohttp建议使用SessionClient接口来进行网络请求，因为对于请求来说是Keep-alive状态，能够缩短同相同服务器再进行连接的时间。所以 ahttp 也建议你开启session，请见 [使用Session](#session)**
