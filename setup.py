@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 
 setup(
 	name='ahttp',
-	version='0.0.1',
+	version='0.0.2',
 	description='The Fastest Speed Asynchronous HTTP Requests',
     long_description=open('README.md').read(),
 	install_requires=['aiohttp>=1.3.5',] ,
@@ -13,7 +13,7 @@ setup(
 	license='BSD License',
 	packages=find_packages(),
 	platforms=["all"],
-	url='https://www.github.com',
+	url='https://github.com/web-trump/ahttp.git',
 	classifiers=[
 		'Development Status :: 6 - Mature',
         'Intended Audience :: Developers',
