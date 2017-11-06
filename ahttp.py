@@ -11,7 +11,7 @@ import asyncio
 try:
 	import aiohttp
 except ImportError:
-    raise RuntimeError('您没有安装aiohttp，请执行安装命令 pip install aiohttp ')
+    raise RuntimeError('您没有安装aiohttp，请执行安装命令 pip install aiohttp  ')
 
 __all__ = (
     'map',  'Session',
