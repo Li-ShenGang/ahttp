@@ -7,7 +7,8 @@
 '''
 
 from functools import partial
-import asyncio
+from random import random
+import asyncio, weakref
 try:
 	import aiohttp
 except ImportError:
@@ -18,34 +19,31 @@ __all__ = (
     'get', 'options', 'head', 'post', 'put', 'patch', 'delete', 'session', 'request'
 )
 
-status = [None, None, None]
 result = []
+all_tasks = []
+sessiondict = {}
 
 class AsyncRequests():
-	def __init__(self, method, url, **kwargs):
-		self.method = method
-		self.session = False
-		self.url = url
-		self.kwargs = kwargs
-
-class GlobalSessionAsyncRequests():
-	def __init__(self, method, url, **kwargs):
-		self.method = method
-		self.session= True
-		self.url = url
+	def __init__(self, method, url, session=False, headers=None, cookies=None, unsafe=None, mark='1111111111', **kwargs):
+		self.method, self.session, self.url, self.mark = method, session, url, mark
 		callback = kwargs.pop('callback', None)
 		self.callback = callback
 		self.kwargs = kwargs
+		if not session:
+			self.sessiondict = (cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None)
+	def run(self, pool=2, exception_handle = None):
+		result = run([self], pool=pool, exception_handle=exception_handle)
+		return result[0]
 
 class WithSession():
-	def __init__(self):
-		self.get = partial(GlobalSessionAsyncRequests, 'GET')
-		self.options = partial(GlobalSessionAsyncRequests, 'OPTIONS')
-		self.head = partial(GlobalSessionAsyncRequests, 'HEAD')
-		self.post = partial(GlobalSessionAsyncRequests, 'POST')
-		self.put = partial(GlobalSessionAsyncRequests, 'PUT')
-		self.patch = partial(GlobalSessionAsyncRequests, 'PATCH')
-		self.delete = partial(GlobalSessionAsyncRequests, 'DELETE')
+	def __init__(self, mark, session=True):
+		self.get = partial(AsyncRequests, 'GET', session=session, mark=mark)
+		self.options = partial(AsyncRequests, 'OPTIONS', session=session, mark=mark)
+		self.head = partial(AsyncRequests, 'HEAD', session=session, mark=mark)
+		self.post = partial(AsyncRequests, 'POST', session=session, mark=mark)
+		self.put = partial(AsyncRequests, 'PUT', session=session, mark=mark)
+		self.patch = partial(AsyncRequests, 'PATCH', session=session, mark=mark)
+		self.delete = partial(AsyncRequests, 'DELETE', session=session, mark=mark)
 	
 get = partial(AsyncRequests, 'GET')
 options = partial(AsyncRequests, 'OPTIONS')
@@ -55,14 +53,16 @@ put = partial(AsyncRequests, 'PUT')
 patch = partial(AsyncRequests, 'PATCH')
 delete = partial(AsyncRequests, 'DELETE')
 
-def Session(cookies = None, headers = None, unsafe = False):
-	status = [cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None ]
-	return WithSession()
+def Session(cookies = None, headers = None, unsafe = None):
+	#status = [cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None ]
+	mark = str(round(random()*10**10))
+	sessiondict[mark] = (cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None)
+	return WithSession(mark=mark)
 	
-def map(tasks=[], pool=2, exception_handle = None):
+def run(tasks, pool=2, exception_handle = None):
 	del result[:]
 	loop = asyncio.get_event_loop()
-	future = asyncio.ensure_future( run(tasks, pool, exception_handle) )
+	future = asyncio.ensure_future( go(tasks, pool, exception_handle) )
 	loop.run_until_complete(future)
 	#loop.close()
 	return result
@@ -90,6 +90,10 @@ class Ahttp():
 	@property
 	def status(self):
 		return self.clientResponse.status
+		
+	@property
+	def method(self):
+		return self.clientResponse.method
 	
 	def text(self, encoding = 'utf-8'):
 		return self.content.decode(encoding)
@@ -99,19 +103,23 @@ class Ahttp():
 
 	__str__=__repr__
 
-async def run(tasks, pool, exception_handle):
+async def go(tasks, pool, exception_handle):
+	del all_tasks[:]
+	sem = asyncio.Semaphore(pool)
+	classify={}
+	[ classify[i.mark].append(i) if classify.get(i.mark, 0) else classify.setdefault(i.mark,[i]) for i in tasks ]
+	
+	try:
+		for i in classify.pop('1111111111'):
+			all_tasks.append( asyncio.ensure_future( control_sem(sem, i , exception_handle, session=False) ) )
+	except:
+		pass
+	for i in classify:
+		async with aiohttp.ClientSession( cookies = sessiondict[i][0] , headers = sessiondict[i][1], cookie_jar = sessiondict[i][2] ) as locals()['session{}'.format(i)]:
+			for j in classify[i]:
+				all_tasks.append( asyncio.ensure_future( control_sem(sem, j , exception_handle, session=locals()['session{}'.format(i)]) ) )
+			await asyncio.wait( all_tasks )
 
-    sem = asyncio.Semaphore(pool)
-    all_tasks=[]
-    async with aiohttp.ClientSession( cookies = status[0] , headers = status[1], cookie_jar = status[2] ) as session:
-        for i in tasks:
-            if i.session:
-                task = asyncio.ensure_future( bound_fetch(sem, i , exception_handle, session=session) )
-            else:
-                task = asyncio.ensure_future( bound_fetch(sem, i, exception_handle) )
-            all_tasks.append(task)
-        await asyncio.wait(all_tasks)
-		
 async def fetch(session, i, exception_handle):
 	try:
 		if session:
@@ -120,21 +128,23 @@ async def fetch(session, i, exception_handle):
 				myAhttp = Ahttp(content,resp)
 				result.append(myAhttp)
 		else:
-			async with aiohttp.request(i.method, i.url, **(i.kwargs)) as resp:
-				content = await resp.read()
-				myAhttp = Ahttp(content,resp)
-				result.append(myAhttp)
+			async with aiohttp.ClientSession( cookies = i.sessiondict[0] , headers = i.sessiondict[1], cookie_jar = i.sessiondict[2] ) as session2:
+				async with session2.request(i.method, i.url, **(i.kwargs)) as resp:
+					content = await resp.read()
+					myAhttp = Ahttp(content,resp)
+					result.append(myAhttp)
 
 		if i.callback:
 			try:
 				i.callback(myAhttp)
 			except:
 				pass
-	except:
-		#错误处理，如果出错，默认将当前任务作为参数传到指定的错误处理函数中
+	except Exception as e:
 		result.append(None)
+		exception_handle and exception_handle(i, e)
+		raise e
 				
-async def bound_fetch(sem, i, exception_handle, session = False ):
+async def control_sem(sem, i, exception_handle, session ):
     # 限制信号量
     async with sem:
         await fetch(session, i, exception_handle)

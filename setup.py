@@ -4,15 +4,15 @@ from setuptools import setup, find_packages
 
 setup(
 	name='ahttp',
-	version='0.0.2',
-	description='The Fastest Speed Asynchronous HTTP Requests',
-    long_description=open('README.md').read(),
+	version='1.0.0',
+	description='Based on aiohttp and asyncio requests',
+    long_description='The Instructions of ahttp at https://github.com/web-trump/ahttp.git',
 	install_requires=['aiohttp>=1.3.5',] ,
 	author='LiShenGang',
 	author_email='cszy2013@163.com',
 	license='BSD License',
-	packages=find_packages(),
-	platforms=["all"],
+	py_modules= ['ahttp'] ,
+	platforms=["python 3.5+"],
 	url='https://github.com/web-trump/ahttp.git',
 	classifiers=[
 		'Development Status :: 6 - Mature',
