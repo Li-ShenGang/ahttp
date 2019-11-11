@@ -1,176 +1,179 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-'''
-作者：李C
-邮箱：cszy2013@163.com
-'''
-
-from functools import partial, wraps
-from random import random
-import asyncio, os
-from aiohttp.helpers import deprecated_noop
+from requests_html import HTML, HTMLSession
+from aiohttp import ClientResponse
+from functools import partial
 from cchardet import detect
-try:
-	import aiohttp
-except ImportError:
-    raise RuntimeError('您没有安装aiohttp，请执行安装命令 pip install aiohttp  ')	
+import json, aiohttp, asyncio, ctypes
 
-if os.name is not 'nt':
-	try:
-		import uvloop
-	except:
-		print('检测到您未安装uvloop, ahttp将使用默认引擎aiohttp作为时间循环。\n鉴于uvloop拥有更快的事件循环速度，请您安装uvloop，安装方法：\npip install uvloop')
-	else:
-		asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-		
-	
 __all__ = (
     'map',  'Session', 
     'get', 'options', 'head', 'post', 'put', 'patch', 'delete', 'session', 'request'
 )
 
-result, all_tasks, connector, sessiondict = [],[],[],{}
+class Session():
+    def __init__(self, *args, **kwargs):
+        self.session = self
+        self.headers = HTMLSession().headers
+        self.cookies = {}
+        self.request_pool = []
 
-class AhttpRequest():
-	def __init__(self, method, url, timeout=None, session=False, headers=None, cookies=None, unsafe=None, mark='1111111111', **kwargs):
-		self.method, self.session, self.url, self.mark, self.timeout = method, session, url, mark, timeout
-		callback = kwargs.pop('callback', None)
-		self.callback = callback
-		self.kwargs = kwargs
-		if not session:
-			self.sessiondict = (cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None)
-	def run(self, pool=5, exception_handle = None):
-		result = run([self], pool=pool, exception_handle=exception_handle)
-		return result[0]
+    def __getattr__(self, name):
+        if name in ['get', 'options', 'head', 'post', 'put', 'patch', 'delete']:
+            new_req = AsyncRequestTask(headers=self.headers, session = self.session)
+            new_req.__getattr__(name)
+            self.request_pool.append(new_req)
+            return new_req.get_params
 
-class WithSession():
-	def __init__(self, mark, session=True):
-		self.get = partial(AhttpRequest, 'GET', session=session, mark=mark)
-		self.options = partial(AhttpRequest, 'OPTIONS', session=session, mark=mark)
-		self.head = partial(AhttpRequest, 'HEAD', session=session, mark=mark)
-		self.post = partial(AhttpRequest, 'POST', session=session, mark=mark)
-		self.put = partial(AhttpRequest, 'PUT', session=session, mark=mark)
-		self.patch = partial(AhttpRequest, 'PATCH', session=session, mark=mark)
-		self.delete = partial(AhttpRequest, 'DELETE', session=session, mark=mark)
-	
-get = partial(AhttpRequest, 'GET')
-options = partial(AhttpRequest, 'OPTIONS')
-head = partial(AhttpRequest, 'HEAD')
-post = partial(AhttpRequest, 'POST')
-put = partial(AhttpRequest, 'PUT')
-patch = partial(AhttpRequest, 'PATCH')
-delete = partial(AhttpRequest, 'DELETE')
+    def __repr__(self):
+        return f"<Ahttp Session [id:{id(self.session)} client]>"
 
-class ClientSession(aiohttp.ClientSession):
-	def close(self):
-		"""
-		对ClientSession类的close方法进行重写
-		"""
-		if not self.closed:
-			if self._connector_owner:
-				self._connector.close()
-			connector.append(self._connector)
+class AsyncRequestTask():
+    def __init__(self, *args, session=None, headers=None, **kwargs):
+        self.session = session
+        self.headers = headers
+        self.cookies = None
+        self.kw = kwargs
+        self.method = None
 
-		return deprecated_noop('ClientSession.close() is a coroutine')
-def Session(cookies = None, headers = None, unsafe = None):
-	mark = str(round(random()*10**10))
-	sessiondict[mark] = (cookies, headers, aiohttp.CookieJar(unsafe=True) if unsafe else None)
-	return WithSession(mark=mark)
-	
-def run(tasks, pool=2, exception_handle = None):
-	del result[:]
-	del connector[:]
-	loop = asyncio.get_event_loop()
-	future = asyncio.ensure_future( go(tasks, pool, exception_handle, loop=loop) )
-	loop.run_until_complete(future)
-	#loop.close()
-	return result
+    def __getattr__(self, name):
+        if name in ['get', 'options', 'head', 'post', 'put', 'patch', 'delete']:
+            self.method = name
+            return self.get_params
+
+    def __repr__(self):
+        return f"<AsyncRequestTask session:[{id(self.session)}] req:[{self.method.upper()}:{self.url}]>"
+
+    def get_params(self, *args, **kw):
+        self.url = args[0]
+        self.args = args[1:]
+        if "callback" in kw:
+            self.callback = kw['callback']
+            kw.pop("callback")
+        else:
+            self.callback = None
+        if "headers" in kw:
+            self.headers = kw['headers']
+            kw.pop("headers")
+        self.kw = kw
+        return self
+    
+    def run(self):
+        future = asyncio.ensure_future(single_req(self))
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(future)
+        new_res = AhttpResponse(self.result, self.content, self)
+        return [new_res, self.callback and self.callback(new_res)][0]
 
 class AhttpResponse():
-	def __init__(self,content,clientResponse):
-		self.content = content
-		self.clientResponse = clientResponse
-		
-	def raw(self):
-		return self.clientResponse
-		
-	@property
-	def url(self):
-		return self.clientResponse.url
-		
-	@property
-	def cookies(self):
-		return self.clientResponse.cookies
-		
-	@property
-	def headers(self):
-		return self.clientResponse.headers
+    def __init__(self, res, content, req, *args, **kwargs):
+        self.content = content
+        self.req = req
+        self.raw = self.clientResponse = res
 
-	@property
-	def status(self):
-		return self.clientResponse.status
-		
-	@property
-	def method(self):
-		return self.clientResponse.method
-	
-	def text(self, encoding = None):
-		encoding = encoding or detect(self.content)['encoding']
-		return self.content.decode(encoding=encoding)
+    @property
+    def text(self):
+        code_type = detect(self.content)
+        return self.content.decode(code_type['encoding'])
+    @property
+    def url(self):
+        return self.clientResponse.url
+    @property
+    def cookies(self):
+        return self.clientResponse.cookies
+        
+    @property
+    def headers(self):
+        return self.clientResponse.headers
 
-	def __repr__(self):
-		return "<AhttpResponse [status {}]>".format(self.clientResponse.status)
+    def json(self):
+        return json.loads(self.text)
 
-	__str__=__repr__
+    @property
+    def status(self):
+        return self.clientResponse.status
+        
+    @property
+    def method(self):
+        return self.clientResponse.method
+    @property
+    def html(self):
+        return self.dom
+    @property
+    def dom(self):
+        """
+        返回一个requests_html对象，
+        支持所有requests_html的html对象的操作。例如find, xpath, render（先安装chromium浏览器）
+        """
+        html = HTML(html=self.text)
+        html.url = self.raw.url
+        return html
 
-async def go(tasks, pool, exception_handle, loop):
-	del all_tasks[:]
-	conn = aiohttp.TCPConnector(use_dns_cache=True, loop=loop, verify_ssl=False)
-	sem = asyncio.Semaphore(pool)
-	classify={}
-	[ classify[i.mark].append(i) if classify.get(i.mark, 0) else classify.setdefault(i.mark,[i]) for i in tasks ]
-	try:
-		for i in classify.pop('1111111111'):
-			all_tasks.append( control_sem(sem, i , exception_handle, session=False) )
-	except:
-		pass
-	for i in classify:
-		async with ClientSession( cookies=sessiondict[i][0], headers=sessiondict[i][1], cookie_jar=sessiondict[i][2], connector_owner=False, connector=conn ) as locals()['session{}'.format(i)]:
-			for j in classify[i]:
-				all_tasks.append(  control_sem(sem, j , exception_handle, session=locals()['session{}'.format(i)])  )
+    def __repr__(self):
+        return f"<AhttpResponse status[{self.status}] url=[{self.url}]>"
 
-	await asyncio.wait( all_tasks )
-	#关闭所有连接
-	for i in connector:
-		i.close()
-	return True
+def run(tasks, pool=2, max_try=3, callback=None, order=False):
+    if not isinstance(tasks, list):
+        raise "the tasks of run must be a list object"
+    conn = aiohttp.TCPConnector(use_dns_cache=True, loop=asyncio.get_event_loop(), ssl=False)
+    sem = asyncio.Semaphore(pool)
+    result = []
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(multi_req(tasks, conn, sem, max_try, callback, result))
+    if not order:
+        return result
+    rid = [*map(lambda x:id(x), tasks)]
+    new_res = [*rid]
+    for i in result:
+        index = rid.index(id(i.req))
+        rid[index] = 0
+        new_res[index] = i
+    return new_res
+    
+def wrap_headers(headers):
+    new_headers = {}
+    for k, v in headers.items():
+        new_headers[k] = str(v)
+    return new_headers
 
-async def fetch(session, i, exception_handle):
-	try:
-		if session:
-			async with session.request(i.method, i.url, timeout=i.timeout, **(i.kwargs)) as resp:
-				content = await resp.read()
-				myAhttp = AhttpResponse(content,resp)
-		else:
-			async with aiohttp.ClientSession( cookies = i.sessiondict[0] , headers = i.sessiondict[1], cookie_jar = i.sessiondict[2] ) as session2:
-				async with session2.request(i.method, i.url, timeout=i.timeout, **(i.kwargs)) as resp:
-					content = await resp.read()
-					myAhttp = AhttpResponse(content,resp)
-					
-		if i.callback:
-			try:
-				i.callback(myAhttp)
-			except:
-				pass
-	except Exception as e:
-		myAhttp = None
-		exception_handle and exception_handle(i, e)
+async def single_req(self):
+    async with aiohttp.ClientSession(cookies=self.cookies) as session:
+        async with session.request(self.method, self.url, *self.args, ssl=False, headers=wrap_headers(self.headers or self.session.headers), **self.kw) as resp:
+            res = await resp.read()
+            self.result, self.content = resp, res
 
-	finally:
-		result.append(myAhttp)
-				
-async def control_sem(sem, i, exception_handle, session ):
+async def multi_req(tasks, conn, sem, max_try, callback, result):
+    sessions_list = {}
+    new_tasks = []
+    for i in tasks:
+        if id(i.session) not in sessions_list:
+            sessions_list[id(i.session)]=aiohttp.ClientSession(connector_owner=False, connector=conn, cookies=i.session.cookies)
+        new_tasks.append(asyncio.ensure_future(control_sem(sem, i, sessions_list[id(i.session)], result)))
+
+    await asyncio.wait(new_tasks)
+    await asyncio.wait([asyncio.ensure_future(v.close()) for k,v in sessions_list.items()])
+    await conn.close()#关闭tcp连接器
+
+async def control_sem(sem, i, session, result):
     # 限制信号量
 	async with sem:
-		await fetch(session, i, exception_handle)
+		await fetch(i, session, result)
+
+async def fetch(i, session, result):
+    headers=wrap_headers(i.headers or ctypes.cast(i.session, ctypes.py_object).value.headers)
+    async with session.request(i.method, i.url, *i.args, headers=headers, **i.kw) as resp:
+        res = await resp.read()
+        r = AhttpResponse(resp, res, i)
+        result.append(r)
+        if i.callback:
+            i.callback(r)
+
+def create_session(method, *args, **kw):
+    sess = Session()
+    return {"get" : sess.get, "post":sess.post, "options" : sess.options, "head":sess.head, "put":sess.put, "patch":sess.patch, "delete":sess.delete}[method](*args, **kw)
+
+get = partial(create_session, "get")
+post = partial(create_session, "post")
+options = partial(create_session, "options")
+head = partial(create_session, "head")
+put = partial(create_session, "put")
+patch = partial(create_session, "patch")
+delete = partial(create_session, "delete")
